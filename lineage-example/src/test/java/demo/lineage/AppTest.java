@@ -18,16 +18,21 @@ public class AppTest {
     public void shouldGenerateLineageArtifacts() throws IOException {
         Path jsonPath = Paths.get("target", "lineage", "graph.json");
         Path mermaidPath = Paths.get("target", "lineage", "graph.mmd");
+        Path htmlPath = Paths.get("target", "lineage", "graph.html");
 
         Assert.assertTrue("graph.json 不存在", Files.exists(jsonPath));
         Assert.assertTrue("graph.mmd 不存在", Files.exists(mermaidPath));
+        Assert.assertTrue("graph.html 不存在", Files.exists(htmlPath));
 
         String json = new String(Files.readAllBytes(jsonPath), StandardCharsets.UTF_8);
         String mermaid = new String(Files.readAllBytes(mermaidPath), StandardCharsets.UTF_8);
+        String html = new String(Files.readAllBytes(htmlPath), StandardCharsets.UTF_8);
 
         Assert.assertTrue(json.contains("\"type\":\"PRECEDES\""));
         Assert.assertTrue(json.contains("\"type\":\"MUTEX\""));
         Assert.assertTrue(mermaid.contains("flowchart LR"));
         Assert.assertTrue(mermaid.contains("MUTEX"));
+        Assert.assertTrue(html.contains("fetch('./graph.json')"));
+        Assert.assertTrue(html.contains("id=\"graph\""));
     }
 }

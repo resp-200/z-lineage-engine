@@ -8,7 +8,7 @@
 
 - 注解声明能力（业务操作、事件、资源触达）
 - 编译期关系推理能力（先后关系、互斥关系）
-- 图谱导出能力（JSON + Mermaid）
+- 图谱导出能力（JSON + Mermaid + HTML）
 
 ## 功能概览
 
@@ -37,6 +37,7 @@
 - `target/classes/META-INF/lineage/graph.json`
 - `target/lineage/graph.json`
 - `target/lineage/graph.mmd`
+- `target/lineage/graph.html`
 
 ### 4) 可运行示例（lineage-example）
 
@@ -84,7 +85,7 @@
           </path>
         </annotationProcessorPaths>
         <compilerArgs>
-          <arg>-Alineage.output=json,mermaid</arg>
+          <arg>-Alineage.output=json,mermaid,html</arg>
           <arg>-Alineage.minConfidence=0.6</arg>
           <arg>-Alineage.strict=false</arg>
           <arg>-Alineage.outputDir=${project.build.directory}/lineage</arg>
@@ -107,11 +108,85 @@ mvn clean test
 
 - `graph.json`
 - `graph.mmd`
+- `graph.html`
 
 ## 当前版本边界（MVP）
 
 - ✅ PRECEDES / MUTEX 推理
-- ✅ JSON + Mermaid 输出
+- ✅ JSON + Mermaid + HTML 输出
 - ✅ 告警不阻断编译（默认）
-- ⛔ 暂不包含 HTML 交互图
 - ⛔ 暂不包含复杂语义启发式冲突推理
+
+## 5 分钟快速理解处理器
+
+核心入口：`lineage.processor.LineageProcessor`
+
+处理器整体分三步：
+
+1. **收集阶段**（扫描 `@BizOp` 方法）
+   - 读取 `@Effect`，先建立直接证据边：`EMITS`、`CONSUMES`、`TOUCHES`
+   - 记录事件发出方、事件消费方、资源写冲突索引
+2. **推理阶段**（编译最后一轮）
+   - 规则 R1：`EMITS(A,E)` + `CONSUMES(B,E)` => `PRECEDES(A,B)`
+   - 规则 R2：同资源 + 同 key 双写冲突 => `MUTEX(A,B)`
+3. **导出阶段**
+   - 导出 `graph.json` 与 `graph.mmd`
+   - 按 `lineage.minConfidence` 过滤低置信边
+
+## 注解最小使用示例
+
+```java
+@BizOp(id = "order.create", domain = "order")
+@Effect(type = EffectType.TOUCH, target = "Order", access = AccessMode.WRITE, key = "orderId")
+@Effect(type = EffectType.EMIT, target = "OrderCreated")
+public void createOrder() {}
+
+@BizOp(id = "order.pay", domain = "order")
+@Effect(type = EffectType.CONSUME, target = "OrderCreated")
+@Effect(type = EffectType.TOUCH, target = "Order", access = AccessMode.WRITE, key = "orderId")
+public void payOrder() {}
+```
+
+这段会推导出：
+
+- `order.create PRECEDES order.pay`
+- 如果存在另一个对 `Order/orderId` 的写操作，则会推导 `MUTEX`
+
+## graph.json 字段说明
+
+`graph.json` 顶层结构：
+
+- `nodes[]`：节点列表（`id/name/type`）
+- `edges[]`：边列表（`from/to/type/confidence/evidence/...`）
+- `warnings[]`：推理过程告警
+
+常见边类型：
+
+- `EMITS` / `CONSUMES` / `TOUCHES`（直接证据）
+- `PRECEDES` / `MUTEX`（推理结果）
+
+示例片段：
+
+```json
+{
+  "from": "op:order.create",
+  "to": "op:order.pay",
+  "type": "PRECEDES",
+  "confidence": 0.90,
+  "evidence": "rule:event-chain"
+}
+```
+
+## 常见问题
+
+### 1) 为什么有 warning 但构建没失败？
+默认 `-Alineage.strict=false`，告警不阻断。要严格模式可改为 `true`。
+
+### 2) 为什么没生成 `MUTEX`？
+通常是 `TOUCH` 没有 `WRITE`，或缺少 `key`，或同资源同 key 的双写条件不满足。
+
+### 3) 为什么我看不到图文件？
+先确认处理器执行配置在 `process-classes` 阶段，并检查：
+
+- `target/lineage/graph.json`
+- `target/lineage/graph.mmd`

@@ -57,7 +57,7 @@
                                 </path>
                             </annotationProcessorPaths>
                             <compilerArgs>
-                                <arg>-Alineage.output=json,mermaid</arg>
+                                <arg>-Alineage.output=json,mermaid,html</arg>
                                 <arg>-Alineage.minConfidence=0.6</arg>
                                 <arg>-Alineage.strict=false</arg>
                                 <arg>-Alineage.outputDir=${project.build.directory}/lineage</arg>

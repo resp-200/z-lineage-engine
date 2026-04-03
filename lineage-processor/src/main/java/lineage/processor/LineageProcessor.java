@@ -7,6 +7,7 @@ import lineage.annotation.EffectType;
 import lineage.annotation.GraphIgnore;
 import lineage.annotation.RelationType;
 import lineage.annotation.RuleHint;
+import lineage.export.HtmlGraphExporter;
 import lineage.export.JsonGraphExporter;
 import lineage.export.MermaidGraphExporter;
 import lineage.model.EdgeType;
@@ -50,6 +51,13 @@ import java.util.Set;
 
 /**
  * 编译期业务关系图谱处理器。
+ *
+ * 处理流程：
+ * 1. 扫描所有 @BizOp 方法，收集操作节点与证据边（EMITS/CONSUMES/TOUCHES）。
+ * 2. 在编译收尾轮次执行关系推理：
+ *    - 事件链推导 PRECEDES
+ *    - 资源同 key 双写冲突推导 MUTEX
+ * 3. 导出 graph.json、graph.mmd 与 graph.html。
  */
 @SupportedAnnotationTypes({
         "lineage.annotation.BizOp",
@@ -69,10 +77,27 @@ import java.util.Set;
 public class LineageProcessor extends AbstractProcessor {
     private static final String OUTPUT_JSON = "json";
     private static final String OUTPUT_MERMAID = "mermaid";
+    private static final String OUTPUT_HTML = "html";
 
+    /**
+     * 最终输出的图模型。
+     */
     private final GraphModel graphModel = new GraphModel();
+
+    /**
+     * 事件 -> 发出该事件的操作集合。
+     */
     private final Map<String, Set<String>> eventEmitters = new HashMap<>();
+
+    /**
+     * 事件 -> 消费该事件的操作集合。
+     */
     private final Map<String, Set<String>> eventConsumers = new HashMap<>();
+
+    /**
+     * 资源+业务key -> 写操作集合。
+     * 用于 MUTEX（同资源同 key 双写冲突）推理。
+     */
     private final Map<String, Set<String>> writeTouchByResourceAndKey = new HashMap<>();
 
     private Messager messager;
@@ -87,7 +112,7 @@ public class LineageProcessor extends AbstractProcessor {
         super.init(processingEnv);
         this.messager = processingEnv.getMessager();
         this.filer = processingEnv.getFiler();
-        this.output = processingEnv.getOptions().getOrDefault("lineage.output", "json,mermaid");
+        this.output = processingEnv.getOptions().getOrDefault("lineage.output", "json,mermaid,html");
         this.outputDir = processingEnv.getOptions().getOrDefault("lineage.outputDir", "target/lineage");
         this.minConfidence = parseDouble(processingEnv.getOptions().get("lineage.minConfidence"), 0.6D);
         this.strict = Boolean.parseBoolean(processingEnv.getOptions().getOrDefault("lineage.strict", "false"));
@@ -95,8 +120,10 @@ public class LineageProcessor extends AbstractProcessor {
 
     @Override
     public boolean process(Set<? extends javax.lang.model.element.TypeElement> annotations, RoundEnvironment roundEnv) {
+        // 每一轮先收集注解信息。
         collectBizOps(roundEnv);
 
+        // 在最后一轮统一推理并导出，避免中间轮次数据不完整。
         if (roundEnv.processingOver()) {
             derivePrecedesFromEvents();
             deriveMutexFromWriteConflicts();
@@ -141,6 +168,9 @@ public class LineageProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 收集 @Effect 直接证据边。
+     */
     private void collectEffects(String sourceOpId, ExecutableElement method, Effect[] effects) {
         if (Objects.isNull(effects)) {
             return;
@@ -206,6 +236,10 @@ public class LineageProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 推理规则 R1：
+     * EMITS(A, E) + CONSUMES(B, E) => PRECEDES(A, B)
+     */
     private void derivePrecedesFromEvents() {
         for (Map.Entry<String, Set<String>> entry : eventEmitters.entrySet()) {
             String eventName = entry.getKey();
@@ -228,6 +262,10 @@ public class LineageProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 推理规则 R2：
+     * 同资源 + 同业务 key 的双写冲突 => MUTEX
+     */
     private void deriveMutexFromWriteConflicts() {
         for (Map.Entry<String, Set<String>> entry : writeTouchByResourceAndKey.entrySet()) {
             List<String> ops = new ArrayList<>(entry.getValue());
@@ -244,14 +282,24 @@ public class LineageProcessor extends AbstractProcessor {
         }
     }
 
+    /**
+     * 按配置导出产物。
+     * - json: graph.json（类输出目录 + 目标目录）
+     * - mermaid: graph.mmd（目标目录）
+     * - html: graph.html（目标目录，页面读取同目录 graph.json）
+     */
     private void exportArtifacts() {
         try {
-            if (output.contains(OUTPUT_JSON)) {
+            boolean exportJson = hasOutput(OUTPUT_JSON) || hasOutput(OUTPUT_HTML);
+            if (exportJson) {
                 writeJsonToClassOutput();
                 writeJsonToTargetDir();
             }
-            if (output.contains(OUTPUT_MERMAID)) {
+            if (hasOutput(OUTPUT_MERMAID)) {
                 writeMermaidToTargetDir();
+            }
+            if (hasOutput(OUTPUT_HTML)) {
+                writeHtmlToTargetDir();
             }
         } catch (Exception e) {
             error("导出图谱失败: " + e.getMessage());
@@ -282,6 +330,13 @@ public class LineageProcessor extends AbstractProcessor {
         Path dir = Paths.get(outputDir);
         Files.createDirectories(dir);
         Files.write(dir.resolve("graph.mmd"), mmd.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void writeHtmlToTargetDir() throws IOException {
+        String html = HtmlGraphExporter.export();
+        Path dir = Paths.get(outputDir);
+        Files.createDirectories(dir);
+        Files.write(dir.resolve("graph.html"), html.getBytes(StandardCharsets.UTF_8));
     }
 
     private String opNodeId(String opId) {
@@ -328,6 +383,19 @@ public class LineageProcessor extends AbstractProcessor {
 
     private void error(String message) {
         messager.printMessage(Diagnostic.Kind.ERROR, message);
+    }
+
+    private boolean hasOutput(String token) {
+        if (StringUtils.isBlank(output) || StringUtils.isBlank(token)) {
+            return false;
+        }
+        String[] parts = output.split(",");
+        for (String part : parts) {
+            if (token.equals(part.trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private double parseDouble(String value, double defaultValue) {

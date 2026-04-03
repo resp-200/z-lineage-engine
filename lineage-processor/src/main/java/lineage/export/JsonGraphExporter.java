@@ -17,6 +17,10 @@ public final class JsonGraphExporter {
     private JsonGraphExporter() {
     }
 
+    /**
+     * 导出为 JSON 字符串。
+     * 仅输出置信度 >= minConfidence 的边。
+     */
     public static String export(GraphModel model, double minConfidence) {
         BusinessException.isEmpty(model, "graph model must not be empty");
         StringBuilder sb = new StringBuilder();
